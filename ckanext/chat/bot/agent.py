@@ -251,12 +251,20 @@ def init_dynamic_models():
 
 
 # --------------------- System Prompt & Agent ---------------------
-extension_dir = os.path.dirname(os.path.abspath(__file__))
-file_name = 'system_promt.txt'
-file_path = os.path.join(extension_dir, file_name)
+prompt_file_url = toolkit.config.get("ckanext.chat.promt_file_url", None)
+if prompt_file_url:
+    response = requests.get(prompt_file_url)
+    if response.status_code == 200:
+        system_prompt = response.text
+    else:
+        print(f"Failed to retrieve the file. Status code: {response.status_code}")
+else:
+    extension_dir = os.path.dirname(os.path.abspath(__file__))
+    file_name = 'system_prompt.txt'
+    file_path = os.path.join(extension_dir, file_name)
 
-with open(file_path, 'r') as file:
-    system_prompt = file.read()
+    with open(file_path, 'r') as file:
+        system_prompt = file.read()
 
 agent = Agent(
     model=model,
