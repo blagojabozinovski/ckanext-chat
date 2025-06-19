@@ -251,7 +251,7 @@ def init_dynamic_models():
 
 
 # --------------------- System Prompt & Agent ---------------------
-prompt_file_url = toolkit.config.get("ckanext.chat.promt_file_url", None)
+prompt_file_url = toolkit.config.get("ckanext.chat.prompt_file_url", None)
 if prompt_file_url:
     response = requests.get(prompt_file_url)
     if response.status_code == 200:
