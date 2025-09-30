@@ -365,7 +365,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
                 f"Run the CKAN action: '{command}' with the parameters: {parameters}. "
                 "If the action fails, suggest the correct action and explain it using 'get_action_details'.",
                 deps=ctx.deps,
-                usage_limits=UsageLimits(request_limit=10,total_tokens_limit=128000),
+                usage_limits=UsageLimits(request_limit=50,total_tokens_limit=128000),
             ),
             timeout=30
         )
@@ -758,7 +758,7 @@ async def literature_search(
                 rag_agent.run(
                     f"Search for documents using this question:{search_question}. You must return {num_results} results",
                     deps=ctx.deps,
-                    usage_limits=UsageLimits(request_limit=10,total_tokens_limit=128000),
+                    usage_limits=UsageLimits(request_limit=50,total_tokens_limit=128000),
                 ),
                 timeout=30
                 )
