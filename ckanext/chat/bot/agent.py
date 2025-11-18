@@ -315,7 +315,7 @@ rag_agent = Agent(
     deps_type=Deps,
     output_type=LitSearchResult,
     system_prompt="".join(rag_prompt),
-    #retries=3,
+    retries=3,
     model_settings=rag_model_settings,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
@@ -761,7 +761,7 @@ async def literature_search(
                 rag_agent.run(
                     f"Search for documents using this question:{search_question}. You must return {num_results} results",
                     deps=ctx.deps,
-                    usage_limits=UsageLimits(request_limit=25,total_tokens_limit=128000),
+                    usage_limits=UsageLimits(request_limit=50,total_tokens_limit=128000),
                 ),
                 timeout=LITERATURE_SEARCH_TIMEOUT
                 )
