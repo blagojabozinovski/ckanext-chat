@@ -340,6 +340,10 @@ def convert_to_model_messages(history: str) -> List:
 
 # --------------------- Front Agent Delegation Tools ---------------------
 
+CKAN_RUN_TIMEOUT = int(toolkit.config.get("ckanext.chat.ckan_run_timeout", 60))
+LITERATURE_SEARCH_TIMEOUT = int(toolkit.config.get("ckanext.chat.literature_search_timeout", 60))
+LITERATURE_ANALYSE_TIMEOUT = int(toolkit.config.get("ckanext.chat.literature_analyse_timeout", 180))
+
 @agent.tool
 @research_agent.tool
 async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> str:
@@ -356,7 +360,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
     Returns:
         str: The result of the CKAN action as a JSON string, or an error message in case of failure.
     Raises:
-        asyncio.TimeoutError: If the execution of the CKAN action exceeds the specified time (30 seconds).
+        asyncio.TimeoutError: If the execution of the CKAN action exceeds the specified time.
         Exception: For any other unexpected errors during the execution of the CKAN action.
     """
     try:
@@ -365,9 +369,9 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
                 f"Run the CKAN action: '{command}' with the parameters: {parameters}. "
                 "If the action fails, suggest the correct action and explain it using 'get_action_details'.",
                 deps=ctx.deps,
-                usage_limits=UsageLimits(request_limit=10,total_tokens_limit=128000),
+                usage_limits=UsageLimits(request_limit=25,total_tokens_limit=128000),
             ),
-            timeout=30
+            timeout=CKAN_RUN_TIMEOUT
         )
     except asyncio.TimeoutError:
         msg="Timeout on ckan_run attempt, retrying..."
@@ -377,7 +381,6 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
         msg=f"Unexpected error on ckan_run attempt: {str(e)}"
         log.error(msg)
         return msg
-    #log.debug(f"ckan_run return: {r.data.json()}")
     return r.data.json()
     
 
@@ -758,9 +761,9 @@ async def literature_search(
                 rag_agent.run(
                     f"Search for documents using this question:{search_question}. You must return {num_results} results",
                     deps=ctx.deps,
-                    usage_limits=UsageLimits(request_limit=10,total_tokens_limit=128000),
+                    usage_limits=UsageLimits(request_limit=25,total_tokens_limit=128000),
                 ),
-                timeout=30
+                timeout=LITERATURE_SEARCH_TIMEOUT
                 )
             break
         except (asyncio.TimeoutError):
@@ -789,9 +792,9 @@ async def literature_analyse(doc: TextResource, question: str, ssl_verify=False)
             doc_agent.run(
                 prompt,
                 deps=doc,
-                usage_limits=UsageLimits(request_limit=50,total_tokens_limit=128000),
+                usage_limits=UsageLimits(request_limit=25,total_tokens_limit=128000),
             ),
-            timeout=120
+            timeout=LITERATURE_ANALYSE_TIMEOUT
         )
     except asyncio.TimeoutError:
         msg="Timeout on literature_analyse attempt, retrying..."
