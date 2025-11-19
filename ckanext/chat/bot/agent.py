@@ -49,6 +49,28 @@ nest_asyncio.apply()
 
 # --------------------- Helper Functions ---------------------
 
+# --------------------- Configurable limits & timeouts ---------------------
+AGENT_TIMEOUT = int(toolkit.config.get("ckanext.chat.agent_timeout", 60))
+AGENT_RETRIES = int(toolkit.config.get("ckanext.chat.agent_retries", 5))
+REQUEST_LIMIT = int(toolkit.config.get("ckanext.chat.request_limit", 50))
+# Optional token limits (None to disable)
+try:
+    TOTAL_TOKENS_LIMIT = (
+        int(toolkit.config.get("ckanext.chat.total_tokens_limit"))
+        if toolkit.config.get("ckanext.chat.total_tokens_limit") not in (None, "", "None")
+        else None
+    )
+except Exception:
+    TOTAL_TOKENS_LIMIT = None
+try:
+    RESPONSE_TOKENS_LIMIT = (
+        int(toolkit.config.get("ckanext.chat.response_tokens_limit"))
+        if toolkit.config.get("ckanext.chat.response_tokens_limit") not in (None, "", "None")
+        else None
+    )
+except Exception:
+    RESPONSE_TOKENS_LIMIT = None
+
 
 def truncate_output_by_token(
     output: str, token_limit: int, skip_tokens: int = 0, encoding_name="cl100k_base"
@@ -133,7 +155,8 @@ def process_entity(data: Any) -> Any:
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
                 resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
-                return process_entity(resource_dict)
+                # Stop recursion by not re-processing the converted resource
+                return resource_dict
             except ValidationError as validation_error:
                 log.warning(
                     f"Validation error converting to DynamicResource: {validation_error.json()}"
@@ -210,7 +233,11 @@ azure_client = AsyncAzureOpenAI(
     api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
 )
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
-model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
+model = OpenAIModel(
+    deployment,
+    provider=OpenAIProvider(openai_client=azure_client),
+)
+# Apply settings when running (passed via Agent or per run).
 
 # #Ollama setup
 # model = OpenAIModel(
@@ -270,9 +297,14 @@ agent = Agent(
     model=model,
     deps_type=Deps,
     system_prompt="".join(system_prompt),
-    retries=3,
+    retries=AGENT_RETRIES,
+    # tool_max_retries not supported in this pydantic_ai version
     #model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
+
+    # Optional: catch timeout to provide clearer error
+    # (keeps minimal change to behavior)
+
 
 
 def convert_to_model_messages(history: str) -> List:
@@ -287,12 +319,19 @@ async def async_agent_response(prompt: str, history: str, deps: Deps) -> Any:
         init_dynamic_models()
     msg_history = convert_to_model_messages(history)
     # Wrap the synchronous run call into a thread so that it can be awaited
-    response = await asyncio.to_thread(
-        agent.run_sync,
-        user_prompt=prompt,
-        message_history=msg_history,
-        deps=deps,
-        usage_limits=UsageLimits(total_tokens_limit=None, response_tokens_limit=None),
+    response = await asyncio.wait_for(
+        asyncio.to_thread(
+            agent.run_sync,
+            user_prompt=prompt,
+            message_history=msg_history,
+            deps=deps,
+            usage_limits=UsageLimits(
+                request_limit=REQUEST_LIMIT,
+                total_tokens_limit=TOTAL_TOKENS_LIMIT,
+                response_tokens_limit=RESPONSE_TOKENS_LIMIT,
+            ),
+        ),
+        timeout=AGENT_TIMEOUT,
     )
     return response
 
@@ -420,16 +459,16 @@ def get_action_info(action_key: str) -> dict:
 
 
 @agent.tool
-def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
-    """Run CKAN actions basd on the action name and parameters as a dict.
+def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict, max_retries: int = 5) -> Any:
+    """Run CKAN actions with simple retry logic.
 
     Args:
-        ctx (RunContext[Deps]): Instance of Agent dependencys at runtime, passed in by agent framework by default
-        action_name (str): Name of the action to run
-        parameters (Dict): Dict of Parameters to be passed to the action
-
+        ctx (RunContext[Deps]): runtime deps
+        action_name (str): CKAN action
+        parameters (Dict): action params
+        max_retries (int): retry attempts for transient failures
     Returns:
-        Any: Output of the action run
+        Any: cleaned action output or error dict
     """
     user = CKANmodel.User.get(user_reference=ctx.deps.user_id)
     context = {
@@ -439,10 +478,18 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
         "session": CKANmodel.Session,
         "ignore_auth": False,
     }
-    try:
-        response = toolkit.get_action(action_name)(context, parameters)
-    except Exception as e:
-        return {"error": str(e)}
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            response = toolkit.get_action(action_name)(context, parameters)
+            break
+        except Exception as e:
+            last_err = str(e)
+            if attempt == max_retries - 1:
+                return {"error": last_err, "attempts": max_retries}
+            # brief backoff using blocking sleep (sync context)
+            import time
+            time.sleep(0.05 * (attempt + 1))
     if action_name == "package_search":
         view_route = find_route_by_endpoint("dataset.read")
         clean_response = response
