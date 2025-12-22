@@ -43,6 +43,7 @@ from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
+from azure.storage.blob import BlobServiceClient
 
 # Allow nested event loops.
 nest_asyncio.apply()
@@ -527,39 +528,87 @@ def get_resource_file_contents(
         str: the content of the file retrieved
     """
     ckan_url = toolkit.config.get("ckan.site_url")
-    if ckan_url in resource_url:
-        storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
-        # Generate the folder structure based on the resource_id
-        first_level_folder = resource_id[:3]
-        second_level_folder = resource_id[3:6]
-        file_name = resource_id[6:]
+    driver_options_str = toolkit.config.get("ckanext.cloudstorage.driver_options", None)
+    if driver_options_str:
+        if ckan_url in resource_url:
+            try:
+                driver_options = json.loads(driver_options_str)
+                account_name = driver_options.get("key")
+                account_key = driver_options.get("secret")
+                container_name = toolkit.config.get("ckanext.cloudstorage.container_name", "ckan")
 
-        # Construct the full file path
-        file_path = os.path.join(
-            storage_path,
-            "resources",
-            first_level_folder,
-            second_level_folder,
-            file_name,
-        )
-        log.debug(file_path)
-        # Read and return the file contents
-        try:
-            with open(file_path, "r") as file:
-                contents = file.read()
-            return truncate_output_by_token(
-                contents, token_limit=max_token_length, skip_tokens=skip_tokens
-            )
-        except FileNotFoundError:
-            return "File not found."
-        except Exception as e:
-            return str(e)
+                # Retrieve the filename from CKAN metadata
+                resource_metadata = toolkit.get_action("resource_show")({}, {"id": resource_id})
+                # We extract the base name from the url table field
+                resource_name = resource_metadata.get("url", "").split("/")[-1]
+
+                connection_string = (
+                    f"DefaultEndpointsProtocol=https;"
+                    f"AccountName={account_name};"
+                    f"AccountKey={account_key};"
+                    f"EndpointSuffix=core.windows.net"
+                )
+                
+                # Construct the specific Blob Path:
+                blob_path = f"resources/{resource_id}/{resource_name}"
+                
+                # Download from Azure
+                blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+                blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_path)
+                
+                stream = blob_client.download_blob()
+                raw_data = stream.readall()
+                if isinstance(raw_data, (bytes, bytearray)):
+                    contents = raw_data.decode('utf-8')
+                elif isinstance(raw_data, memoryview):
+                    contents = raw_data.tobytes().decode('utf-8')
+                elif isinstance(raw_data, str):
+                    contents = raw_data
+                else:
+                    contents = str(raw_data)
+
+                return truncate_output_by_token(
+                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
+                )
+
+            except Exception as e:
+                return f"Azure Storage Error: {str(e)}"
+
+
     else:
-        return truncate_output_by_token(
-            download_file(resource_url, verify=ssl_verify),
-            token_limit=max_token_length,
-            skip_tokens=skip_tokens,
-        )
+        if ckan_url in resource_url:
+            storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
+            # Generate the folder structure based on the resource_id
+            first_level_folder = resource_id[:3]
+            second_level_folder = resource_id[3:6]
+            file_name = resource_id[6:]
+
+            # Construct the full file path
+            file_path = os.path.join(
+                storage_path,
+                "resources",
+                first_level_folder,
+                second_level_folder,
+                file_name,
+            )
+            log.debug(file_path)
+            # Read and return the file contents
+            try:
+                with open(file_path, "r") as file:
+                    contents = file.read()
+                return truncate_output_by_token(
+                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
+                )
+            except FileNotFoundError:
+                return "File not found."
+            except Exception as e:
+                return str(e)
+        else:
+            return truncate_output_by_token(
+                download_file(resource_url, verify=ssl_verify),
+                token_limit=max_token_length,
+                skip_tokens=skip_tokens,
+            )
 
 
 class FuncSignature(BaseModel):
