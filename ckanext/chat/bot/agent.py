@@ -517,98 +517,40 @@ def get_resource_file_contents(
     skip_tokens: int = 0,
     ssl_verify=True,
 ) -> str:
-    """Retrieves the content of a resource stored in filetore, allows setting max token of output and skip tokens to extract a chunk
-
-    Args:
-        resource_id (str): The UUID of the CKAN resource
-        resource_url (str): The download url of the CKAN resource
-        max_token_length (int): the maximum length of the string to return
-        skip_tokens (int): ommits the token length given from start of the contents, to retrieve a chunk
-    Returns:
-        str: the content of the file retrieved
     """
-    ckan_url = toolkit.config.get("ckan.site_url")
-    driver_options_str = toolkit.config.get("ckanext.cloudstorage.driver_options", None)
-    if driver_options_str:
-        if ckan_url in resource_url:
-            try:
-                driver_options = json.loads(driver_options_str)
-                account_name = driver_options.get("key")
-                account_key = driver_options.get("secret")
-                container_name = toolkit.config.get("ckanext.cloudstorage.container_name", "ckan")
+    Retrieves content strictly via the resource_url.
+    """
+    log.info(f"Attempting download for resource {resource_id} via URL: {resource_url}")
+    
+    try:
+        # We use a 20-second timeout. 
+        # stream=True allows us to stop downloading once we have enough tokens.
+        with requests.get(resource_url, verify=ssl_verify, timeout=20, stream=True) as response:
+            response.raise_for_status()
+            
+            # Read a chunk large enough to cover the max_token_length 
+            # (roughly 1 token = 4 chars, plus a buffer)
+            buffer_size = max_token_length * 10 
+            raw_data = response.raw.read(buffer_size)
+            
+            contents = raw_data.decode('utf-8', errors='ignore')
 
-                # Retrieve the filename from CKAN metadata
-                resource_metadata = toolkit.get_action("resource_show")({}, {"id": resource_id})
-                # We extract the base name from the url table field
-                resource_name = resource_metadata.get("url", "").split("/")[-1]
+        # Use your existing truncation helper
+        return truncate_output_by_token(
+            contents, 
+            token_limit=max_token_length, 
+            skip_tokens=skip_tokens
+        )
 
-                connection_string = (
-                    f"DefaultEndpointsProtocol=https;"
-                    f"AccountName={account_name};"
-                    f"AccountKey={account_key};"
-                    f"EndpointSuffix=core.windows.net"
-                )
-                
-                # Construct the specific Blob Path:
-                blob_path = f"resources/{resource_id}/{resource_name}"
-                
-                # Download from Azure
-                blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-                blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_path)
-                
-                stream = blob_client.download_blob()
-                raw_data = stream.readall()
-                if isinstance(raw_data, (bytes, bytearray)):
-                    contents = raw_data.decode('utf-8')
-                elif isinstance(raw_data, memoryview):
-                    contents = raw_data.tobytes().decode('utf-8')
-                elif isinstance(raw_data, str):
-                    contents = raw_data
-                else:
-                    contents = str(raw_data)
-
-                return truncate_output_by_token(
-                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
-                )
-
-            except Exception as e:
-                return f"Azure Storage Error: {str(e)}"
-
-
-    else:
-        if ckan_url in resource_url:
-            storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
-            # Generate the folder structure based on the resource_id
-            first_level_folder = resource_id[:3]
-            second_level_folder = resource_id[3:6]
-            file_name = resource_id[6:]
-
-            # Construct the full file path
-            file_path = os.path.join(
-                storage_path,
-                "resources",
-                first_level_folder,
-                second_level_folder,
-                file_name,
-            )
-            log.debug(file_path)
-            # Read and return the file contents
-            try:
-                with open(file_path, "r") as file:
-                    contents = file.read()
-                return truncate_output_by_token(
-                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
-                )
-            except FileNotFoundError:
-                return "File not found."
-            except Exception as e:
-                return str(e)
-        else:
-            return truncate_output_by_token(
-                download_file(resource_url, verify=ssl_verify),
-                token_limit=max_token_length,
-                skip_tokens=skip_tokens,
-            )
+    except requests.exceptions.Timeout:
+        log.error(f"Timeout: Server at {resource_url} is not responding.")
+        return "Error: Download timed out. If this is localhost, ensure the server is running with --threaded."
+    except requests.exceptions.RequestException as e:
+        log.error(f"Request failed for {resource_id}: {str(e)}")
+        return f"Download Error: {str(e)}"
+    except Exception as e:
+        log.error(f"Unexpected error: {str(e)}")
+        return f"An unexpected error occurred: {str(e)}"
 
 
 class FuncSignature(BaseModel):
