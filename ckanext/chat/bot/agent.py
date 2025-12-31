@@ -523,9 +523,9 @@ def get_resource_file_contents(
     log.info(f"Attempting download for resource {resource_id} via URL: {resource_url}")
     
     try:
-        # We use a 20-second timeout. 
+        # We use a 30-second timeout. 
         # stream=True allows us to stop downloading once we have enough tokens.
-        with requests.get(resource_url, verify=ssl_verify, timeout=20, stream=True) as response:
+        with requests.get(resource_url, verify=ssl_verify, timeout=30, stream=True) as response:
             response.raise_for_status()
             
             # Read a chunk large enough to cover the max_token_length 
